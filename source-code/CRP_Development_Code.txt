@@ -1,0 +1,461 @@
+import cv2
+import numpy as np
+import tflite_runtime.interpreter as tflite
+import RPi.GPIO as GPIO
+import time
+import statistics
+
+GPIO.setwarnings(False)
+
+
+# Motor control setup (your existing motor control code here)
+# Define motor control pins
+A1, A2, PWMA = 5, 6, 12
+B1, B2, PWMB = 13, 19, 18
+STBY = 26  # Standby pin
+
+# Define Sensor 2 pins (middle sensor)
+TRIG = 22
+ECHO = 26
+
+# Setup GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setup([A1, A2, B1, B2, PWMA, PWMB, STBY], GPIO.OUT)
+GPIO.setup(TRIG, GPIO.OUT)
+GPIO.setup(ECHO, GPIO.IN)
+
+# Define Sensor 1 pins (back middle sensor)
+TRIG_BACK = 16
+ECHO_BACK = 25
+GPIO.setup(TRIG_BACK, GPIO.OUT)
+GPIO.setup(ECHO_BACK, GPIO.IN)
+
+
+# Enable motor driver
+GPIO.setup(STBY, GPIO.OUT)
+GPIO.output(STBY, GPIO.HIGH)
+
+# PWM Setup
+pwmA = GPIO.PWM(PWMA, 1000)  # 1kHz PWM frequency
+pwmB = GPIO.PWM(PWMB, 1000)
+pwmA.start(0)
+pwmB.start(0)
+
+def measure_distance(trig, echo):
+    GPIO.output(trig, False)
+    time.sleep(0.01)
+    GPIO.output(trig, True)
+    time.sleep(0.00001)
+    GPIO.output(trig, False)
+
+    pulse_start = time.time()
+    timeout = pulse_start + 0.3  # 40ms timeout
+
+    while GPIO.input(echo) == 0 and time.time() < timeout:
+        pulse_start = time.time()
+
+    pulse_end = time.time()
+    timeout = pulse_end + 0.3
+
+    while GPIO.input(echo) == 1 and time.time() < timeout:
+        pulse_end = time.time()
+
+    pulse_duration = pulse_end - pulse_start
+    distance = pulse_duration * 17150
+    return round(distance, 2)
+
+def check_obstacle():
+    distances_right = []
+    distances_back = []
+    start_time = time.time()
+
+    # Step 1: Initial 5-second distance check
+    while time.time() - start_time < 5:
+        right_distance = measure_distance(TRIG, ECHO)
+        back_distance = measure_distance(TRIG_BACK, ECHO_BACK)
+
+        distances_right.append(right_distance)
+        distances_back.append(back_distance)
+
+        print(f"Right Distance: {right_distance} cm, Back Distance: {back_distance} cm")
+        time.sleep(0.1)
+    
+    final_right_distance = distances_right[-1]
+    final_back_distance = distances_back[-1]
+
+    print(f"Final Right Distance: {final_right_distance} cm, Final Back Distance: {final_back_distance} cm")
+
+    if final_right_distance < 15 or final_back_distance < 15:
+        print("Obstacle detected in the last measurement! Waiting for it to clear...")
+
+        # Step 2: Wait until 5 continuous seconds of clear readings
+        clear_start = None
+
+        while True:
+            right_distance = measure_distance(TRIG, ECHO)
+            back_distance = measure_distance(TRIG_BACK, ECHO_BACK)
+
+            print(f"Right Distance: {right_distance} cm, Back Distance: {back_distance} cm")
+
+            if right_distance >= 15 and back_distance >= 15:
+                if clear_start is None:
+                    clear_start = time.time()
+                    print("Clear readings started...")
+                elif time.time() - clear_start >= 5:
+                    print("Path has been clear for 5 seconds. Resuming parking process.")
+                    break
+            else:
+                if clear_start is not None:
+                    print("Obstacle detected again. Resetting clear timer.")
+                clear_start = None  # Reset the timer if an obstacle is detected again
+
+            time.sleep(0.5)  # Check twice per second
+
+        return False  # Still let the main function know we waited
+
+    else:
+        print("Path is clear in the last measurement. Proceeding with parking...")
+        return True
+
+
+
+# TensorFlow Lite model loading
+# TensorFlow Lite model loading
+model_path = "/home/admin/pi/model (1).tflite"
+interpreter = tflite.Interpreter(model_path=model_path)
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# Parking control functions (move forward, backward, etc.)
+def move_forward(speed=2, duration=None):
+    GPIO.output(A1, GPIO.HIGH)
+    GPIO.output(A2, GPIO.LOW)
+    GPIO.output(B1, GPIO.LOW)
+    GPIO.output(B2, GPIO.HIGH)
+    pwmA.ChangeDutyCycle(speed)
+    pwmB.ChangeDutyCycle(speed)
+    if duration:
+        time.sleep(duration)
+        stop()
+
+# Additional motor control functions (move_backward, stop, etc.)...
+# Add the rest of your motor control functions here...
+#Function to move backward
+def move_backward(speed=2, duration=None):
+    GPIO.output(A1, GPIO.LOW)
+    GPIO.output(A2, GPIO.HIGH)
+    GPIO.output(B1, GPIO.HIGH)
+    GPIO.output(B2, GPIO.LOW)
+    pwmA.ChangeDutyCycle(speed)
+    pwmB.ChangeDutyCycle(speed)
+    if duration:
+        time.sleep(duration)
+        stop
+
+# Function to stop
+def stop():
+    pwmA.ChangeDutyCycle(0)
+    pwmB.ChangeDutyCycle(0)
+    GPIO.output(A1, GPIO.LOW)
+    GPIO.output(A2, GPIO.LOW)
+    GPIO.output(B1, GPIO.LOW)
+    GPIO.output(B2, GPIO.LOW)
+    
+#Function to adjust front wheels for parking
+def align_wheels():
+    print("Aligning wheels into parking position...")
+    
+
+# Function to get distance from Sensor 2
+def get_distance():
+    GPIO.output(TRIG, False)
+    time.sleep(0.02)  # Allow sensor to settle
+    GPIO.output(TRIG, True)
+    time.sleep(0.0001)  # Trigger pulse for 100µs
+    GPIO.output(TRIG, False)
+
+    start_time = time.time()
+    stop_time = time.time()
+
+    while GPIO.input(ECHO) == 0:
+        start_time = time.time()
+    while GPIO.input(ECHO) == 1:
+        stop_time = time.time()
+
+    elapsed_time = stop_time - start_time
+    distance = (elapsed_time * 34300) / 2  # Convert to cm
+
+    return round(distance, 2)
+
+# Function to detect distance for 3 to 5 seconds and decide whether to tilt
+def check_and_decide_tilt():
+    start_time = time.time()
+    min_distance = float('inf')  # Start with an infinitely large distance
+    max_distance = 0
+
+    # Check distance for 3 to 5 seconds
+    while time.time() - start_time < 5:  # Run for 3-5 seconds
+        distance = get_distance()
+        print(f"Distance: {distance} cm")
+        if distance < min_distance:
+            min_distance = distance
+        if distance > max_distance:
+            max_distance = distance
+        time.sleep(0.1)  # Sleep for a short time before next measurement
+
+    # Decision to tilt: If there's too much difference between min and max distance, tilt is required
+    if max_distance - min_distance > 20:  # Threshold of 20 cm difference
+        print("Tilting required to straighten the car!")
+        return True  # Return True to indicate tilting is needed
+    else:
+        print("Car is relatively straight, no tilt needed.")
+        return False  # Return False to indicate no tilt needed
+    
+    
+# Function to tilt and move the car backward based on detected distance
+def tilt_and_move_back():
+    print("Tilting car and moving backward based on detected distance...")
+    
+    check_obstacle()
+    # Move the left motor forward and the right motor backward for more tilt to the right
+    GPIO.output(A1, GPIO.LOW)  # Left motor backward
+    GPIO.output(A2, GPIO.HIGH)
+    GPIO.output(B1, GPIO.HIGH)  # Right motor backward
+    GPIO.output(B2, GPIO.LOW)
+    pwmA.ChangeDutyCycle(60)  # 60% speed for more tilt
+    pwmB.ChangeDutyCycle(50)
+    time.sleep(0.4)  # Move backward for 2 seconds (adjust time as needed
+    
+
+    # Now move forward with the same speed to straighten the car
+    print("Moving forward to straighten the car...")
+    GPIO.output(A1, GPIO.HIGH)  # Left motor forward
+    GPIO.output(A2, GPIO.LOW)
+    GPIO.output(B1, GPIO.LOW)  # Right motor forward
+    GPIO.output(B2, GPIO.HIGH)
+    pwmA.ChangeDutyCycle(40)  # Same speed as backward
+    pwmB.ChangeDutyCycle(40)
+    time.sleep(0.1)
+    
+
+    GPIO.output(A1, GPIO.HIGH)
+    GPIO.output(A2, GPIO.LOW) 
+    GPIO.output(B1, GPIO.HIGH) 
+    GPIO.output(B2, GPIO.LOW) 
+    pwmA.ChangeDutyCycle(50) 
+    pwmB.ChangeDutyCycle(40)
+    time.sleep(0.3)
+    
+        
+    pwmA.ChangeDutyCycle(0)
+    pwmB.ChangeDutyCycle(0)
+    GPIO.output(A1, GPIO.LOW)
+    GPIO.output(A2, GPIO.LOW)
+    GPIO.output(B1, GPIO.LOW)
+    GPIO.output(B2, GPIO.LOW)
+    time.sleep(0.2) 
+    
+    check_obstacle()
+
+    print("Moving backward...")
+    GPIO.output(A1, GPIO.LOW)  # Left motor backward
+    GPIO.output(A2, GPIO.HIGH)
+    GPIO.output(B1, GPIO.HIGH)  # Right motor backward
+    GPIO.output(B2, GPIO.LOW)
+    pwmA.ChangeDutyCycle(70)  # Both motors at same speed
+    pwmB.ChangeDutyCycle(40)
+    time.sleep(0.3)  # Move backward for a short time
+    
+        
+    #After 5 seconds, stop the motors
+    pwmA.ChangeDutyCycle(0)
+    pwmB.ChangeDutyCycle(0)
+    GPIO.output(A1, GPIO.LOW)
+    GPIO.output(A2, GPIO.LOW)
+    GPIO.output(B1, GPIO.LOW)
+    GPIO.output(B2, GPIO.LOW)
+    
+    
+
+    #print("Tilt adjustment complete and car stopped.")
+
+
+# Function to detect distance for 3 seconds and return the minimum distance
+def detect_for_3_seconds():
+    start_time = time.time()
+    min_distance = float('inf')  # Start with an infinitely large distance
+
+    while time.time() - start_time < 5:  # Run for 3 seconds
+        distance = get_distance()
+        print(f"Distance: {distance} cm")
+        if distance < min_distance:
+            min_distance = distance
+        time.sleep(0.2)  # Sleep for a short time before next measurement to avoid rapid polling
+
+    return min_distance
+
+
+# Main parking control logic
+def park_car():
+    #if detect_parking_space():  # If space is free
+        print("Parking sequence initiated...")
+        time.sleep(3)
+        print("Parking now...")
+        
+        # Call your existing parking logic functions
+        move_forward(4, 0.4)  # Example: Move forward to park
+        time.sleep(3)
+        stop()  # Stop when done
+        
+        move_backward(4,0.2)
+        stop()
+        
+        print("Tilting back wheels for parking alignment...")
+        time.sleep(3) #Rest for 3 seconds
+
+        GPIO.output(A1, GPIO.HIGH)   # Left motor stops
+        GPIO.output(A2, GPIO.LOW)
+        GPIO.output(B1, GPIO.HIGH)   # Right motor moves backward slightly
+        GPIO.output(B2, GPIO.LOW)
+        pwmA.ChangeDutyCycle(60)  # Higher speed for more tilt
+        pwmB.ChangeDutyCycle(60)    # Reduce speed to make a slight turn
+        time.sleep(0.5)             # Turn for 0.5 sec
+        stop()
+            
+        # Move backward slowly to complete parking
+        print("Reversing into the parking space...")
+        move_backward(speed=2, duration=0.2)  # Move backward slowly for 1.5 sec
+        stop()
+        
+        tilt_and_move_back()
+
+
+        # Continue with your other parking procedures...
+        print("Car parked successfully!")
+
+        
+def detect_parking_space():
+    # Load webcam or video feed
+    cap = cv2.VideoCapture(0)
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Resize frame to model input size
+        input_size = (416, 416)
+        resized_frame = cv2.resize(frame, input_size)
+        input_data = np.expand_dims(resized_frame, axis=0).astype(np.float32) / 255.0  # Normalize
+
+        # Set input tensor
+        interpreter.set_tensor(input_details[0]['index'], input_data)
+        interpreter.invoke()
+
+        # Get output tensor
+        output_data = interpreter.get_tensor(output_details[0]['index'])
+        output_data = output_data.squeeze()
+
+        # Lists to store detection info
+        boxes, confidences, class_ids = [], [], []
+        image_width, image_height = frame.shape[1], frame.shape[0]
+
+        # Iterate over detected objects
+        for detection in output_data:
+            confidence = detection[4]  # Confidence score
+            class_probabilities = detection[5:]  # Extract class probabilities
+            class_id = np.argmax(class_probabilities)  # Get most confident class
+
+            if confidence > 0.5:  # Confidence threshold
+                center_x, center_y, width, height = detection[:4]
+
+                # Convert YOLO format to pixel values
+                xmin = int((center_x - width / 2) * image_width)
+                ymin = int((center_y - height / 2) * image_height)
+                xmax = int((center_x + width / 2) * image_width)
+                ymax = int((center_y + height / 2) * image_height)
+
+                # Ensure bounding box is within image dimensions
+                xmin = max(0, xmin)
+                ymin = max(0, ymin)
+                xmax = min(image_width - 1, xmax)
+                ymax = min(image_height - 1, ymax)
+
+                # Store detection info
+                boxes.append([xmin, ymin, xmax - xmin, ymax - ymin])  # Convert to OpenCV format
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
+
+        # Apply Non-Maximum Suppression (NMS) only if we have detections
+        if len(boxes) > 0:
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+
+            if len(indices) > 0:  # Ensure indices is not empty
+                for i in indices.flatten():
+                    xmin, ymin, w, h = boxes[i]
+                    class_id = class_ids[i]
+                    confidence = confidences[i]
+
+                    # Color (Red for "occupied", Green for "free")
+                    color = (0, 0, 255) if class_id == 1 else (0, 255, 0)
+                    label = f"Occupied" if class_id == 1 else "Free"
+
+                    # Draw bounding box and label
+                    cv2.rectangle(frame, (xmin, ymin), (xmin + w, ymin + h), color, 2)
+                    cv2.putText(frame, f"{label}: {confidence:.2f}", (xmin, ymin - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # Show frame
+        cv2.imshow("Parking Space Detection", frame)
+
+        # Exit loop if 'q' is pressed
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    # Return if the space is free or occupied
+    return "Free" if class_id == 0 else "Occupied"
+
+# Main execution
+try:
+    for attempt in range(1, 4):  # Run 3 times
+        print(f"Detection Attempt {attempt}/3")
+        
+        label = detect_parking_space()  # Get label from detect_parking_space()
+
+        if label == "Occupied":
+            if attempt < 3:
+                print("Parking space is occupied. Moving forward to check another space...")
+                move_forward(4, 0.5)  # Move forward slightly to the next space
+            else:
+                print("Parking lot is fully occupied.")
+                stop()
+            
+            if attempt < 3:  # Give it another chance if it's not the last attempt
+                print("Waiting for next attempt...")
+                time.sleep(5)
+            continue  # Skip to next detection attempt
+
+        elif label == "Free":
+            print("Free parking space detected. Proceeding to parking process...")
+            # Continue with parking logic here (as the space is free)
+            park_car()  # Proceed with parking
+            break  # Exit the loop after parking successfully
+
+        # If no "Free" space found in 3 attempts, exit
+        if attempt == 3:
+            print("No free parking space found after 3 attempts.")
+            stop()
+            break
+
+except KeyboardInterrupt:
+    print("Program stopped manually.")
+finally:
+    GPIO.cleanup()
+
+
+
